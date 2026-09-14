@@ -1,0 +1,79 @@
+name: Build ChessOverlay APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore Android source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat buildsrc/part-*.b64 > /tmp/chessoverlay.b64
+          base64 -d /tmp/chessoverlay.b64 > /tmp/chessoverlay.tar.gz
+          tar -xzf /tmp/chessoverlay.tar.gz
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform and NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            'platform-tools' \
+            'platforms;android-37' \
+            'build-tools;36.0.0' \
+            'ndk;28.2.13676358'
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+      - name: Set up Gradle 9.6
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.6'
+
+      - name: Fetch Stockfish 19
+        shell: bash
+        run: bash scripts/fetch_stockfish_19.sh
+
+      - name: Build Stockfish for Android
+        shell: bash
+        run: bash scripts/build_stockfish_android.sh
+
+      - name: Assemble debug APK
+        shell: bash
+        run: gradle --no-daemon assembleDebug --stacktrace
+
+      - name: Verify APK exists
+        shell: bash
+        run: |
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChessOverlay-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
