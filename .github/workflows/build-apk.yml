@@ -60,7 +60,13 @@ jobs:
           set -euo pipefail
           python3 scripts/reconstruct_piece_model.py
           test -s app/src/main/assets/piece_mlp.bin
-          echo 'c87bbe091340915fca5188ecc4a05f90af4b9c34ba7d0f4313eb341fb5ebe065  app/src/main/assets/piece_mlp.bin' | sha256sum -c -
+          echo '2e6579341f341e0e53f848981ff410a4ccb2e2d996ae608ef534f95c79f2c0d8  app/src/main/assets/piece_mlp.bin' | sha256sum -c -
+
+      - name: Validate Lichess recognition regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_lichess_model.py
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -148,7 +154,7 @@ jobs:
           unzip -t "$apk" >/dev/null
           unzip -l "$apk" | grep -E 'AndroidManifest.xml|classes.*dex|lib/.*/libstockfish\.so|assets/piece_mlp.bin'
           unzip -p "$apk" assets/piece_mlp.bin > /tmp/piece_mlp.bin
-          echo 'c87bbe091340915fca5188ecc4a05f90af4b9c34ba7d0f4313eb341fb5ebe065  /tmp/piece_mlp.bin' | sha256sum -c -
+          echo '2e6579341f341e0e53f848981ff410a4ccb2e2d996ae608ef534f95c79f2c0d8  /tmp/piece_mlp.bin' | sha256sum -c -
           test "$(unzip -l "$apk" | grep -c 'lib/arm64-v8a/libstockfish.so')" -ge 1
           test "$(unzip -l "$apk" | grep -c 'lib/x86_64/libstockfish.so')" -ge 1
           ls -lh "$apk"
