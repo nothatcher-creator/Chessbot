@@ -35,7 +35,6 @@ jobs:
           test -f app/src/test/java/com/nothatcher/chessoverlay/regression/DetectionRegressionTest.kt
 
           cat websrc/lichess-dom-*.b64.part > /tmp/lichess-dom.b64
-          echo 'ca36b2d74aae424bd3565b2ce641447b287e435687784183df0d1d6f6fa9c4b6  /tmp/lichess-dom.b64' | sha256sum -c -
           base64 -d /tmp/lichess-dom.b64 > /tmp/lichess-dom.tar.gz
           echo '55db02755dabb5801e00adfab4a9caac533ed8aecf60e59d9b29e3bc90d68d2c  /tmp/lichess-dom.tar.gz' | sha256sum -c -
           tar -xzf /tmp/lichess-dom.tar.gz
