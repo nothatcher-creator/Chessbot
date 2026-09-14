@@ -32,16 +32,21 @@ jobs:
           sed -i 's/2026\.08\.01/2026.06.00/g; s/2026\.08\.00/2026.06.00/g' gradle/libs.versions.toml
           sed -i 's/2\.11\.0/2.10.0/g' gradle/libs.versions.toml
 
+          # getMediaProjection() is nullable. Fail capture startup cleanly if Android
+          # does not return a projection, then keep the local strongly non-null.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/nothatcher/chessoverlay/capture/MediaProjectionService.kt')
+          s = p.read_text()
+          old = 'val mediaProjection = manager.getMediaProjection(resultCode, data)'
+          new = 'val mediaProjection = manager.getMediaProjection(resultCode, data) ?: error("MediaProjection unavailable")'
+          if old not in s:
+              raise SystemExit('Expected MediaProjection construction line not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+
           echo '===== PATCHED VERSION CATALOG ====='
           cat gradle/libs.versions.toml
-
-      - name: Upload MediaProjection source diagnostic
-        uses: actions/upload-artifact@v4
-        with:
-          name: source-diagnostic
-          path: app/src/main/java/com/nothatcher/chessoverlay/capture/MediaProjectionService.kt
-          if-no-files-found: error
-          retention-days: 1
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
