@@ -1,0 +1,28 @@
+name: Export Reconstructed Source
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat buildsrc/part-*.b64 > /tmp/chessoverlay.b64
+          base64 -d /tmp/chessoverlay.b64 > /tmp/chessoverlay.tar.gz
+          tar -tzf /tmp/chessoverlay.tar.gz | head -n 200
+      - name: Upload source bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: reconstructed-source
+          path: /tmp/chessoverlay.tar.gz
+          retention-days: 1
