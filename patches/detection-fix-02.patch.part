@@ -1,0 +1,158 @@
++import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.runBlocking
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertNotNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++import kotlin.math.abs
++
++class DetectionRegressionTest {
++    @Test fun smallHighlightedBoardIsDetected() {
++        val locator = AxisAlignedBoardLocator()
++        val frame = checkerFrame(1080, 1920, 348, 620, 384, setOf(9, 10, 17, 18, 45))
++        val found = locator.locate(frame)
++        assertNotNull(found)
++        found!!
++        assertTrue(abs(found.size - 384) <= 32)
++        assertTrue(abs(found.left - 348) <= 40)
++        assertTrue(abs(found.top - 620) <= 40)
++    }
++
++    @Test fun enteringPracticeAnalyzesAlreadyStableBoard() = runBlocking {
++        val engine = FakeEngine()
++        val coordinator = SessionCoordinator(SessionMode.SCAN_ONLY, engine, { EngineConfig(1, 16, 1000) }, AnalysisContext.PUZZLE)
++        coordinator.acceptConfirmedPosition(confirmedStart())
++        assertTrue(engine.analyzed.isEmpty())
++        coordinator.setMode(SessionMode.PRACTICE)
++        assertEquals(1, engine.analyzed.size)
++    }
++
++    @Test fun selectingAllowedContextAnalyzesAlreadyStableBoardAndPublishesContext() = runBlocking {
++        val engine = FakeEngine()
++        val coordinator = SessionCoordinator(SessionMode.PRACTICE, engine, { EngineConfig(1, 16, 1000) }, AnalysisContext.LIVE_HUMAN)
++        coordinator.acceptConfirmedPosition(confirmedStart())
++        assertTrue(engine.analyzed.isEmpty())
++        coordinator.setAnalysisContext(AnalysisContext.PUZZLE)
++        assertEquals(1, engine.analyzed.size)
++        assertEquals(AnalysisContext.PUZZLE, coordinator.state.value.analysisContext)
++    }
++
++    @Test fun postGameReviewAnalyzesRegardlessOfPreviousLiveContext() = runBlocking {
++        val engine = FakeEngine()
++        val coordinator = SessionCoordinator(SessionMode.SCAN_ONLY, engine, { EngineConfig(1, 16, 1000) }, AnalysisContext.LIVE_HUMAN)
++        coordinator.acceptConfirmedPosition(confirmedStart())
++        coordinator.setMode(SessionMode.POST_GAME_REVIEW)
++        assertEquals(1, engine.analyzed.size)
++        coordinator.acceptEngineAnalysis(EngineAnalysis("e2e4", null, 20, null, 10, 12, 1000, 10000, listOf("e2e4"), 0, 1))
++        assertEquals("e2e4", coordinator.state.value.analysis?.bestMoveUci)
++    }
++
++    @Test fun oneDetectorMissDoesNotDiscardStableBoard() = runBlocking {
++        val engine = FakeEngine()
++        val coordinator = SessionCoordinator(SessionMode.PRACTICE, engine, { EngineConfig(1, 16, 1000) }, AnalysisContext.PUZZLE)
++        val recognition = standardStartRecognition()
++        var call = 0
++        val recognizer = BoardRecognizer { _: NormalizedFrame -> if (call++ == 0) recognition else null }
++        val pipeline = LiveAnalysisPipeline(recognizer, OrientationResolver(), RecognitionTracker(confirmFrames = 1), coordinator)
++        val dummy = NormalizedFrame(8, 8, ByteArray(8 * 8 * 4), 0, 0)
++        pipeline.acceptFrame(dummy)
++        assertEquals(RecognitionStatus.STABLE, coordinator.state.value.recognitionStatus)
++        pipeline.acceptFrame(dummy.copy(capturedAtElapsedMs = 100))
++        assertEquals(RecognitionStatus.STABLE, coordinator.state.value.recognitionStatus)
++        pipeline.acceptFrame(dummy.copy(capturedAtElapsedMs = 200))
++        assertEquals(RecognitionStatus.LOOKING_FOR_BOARD, coordinator.state.value.recognitionStatus)
++    }
++
++    @Test fun kingSecondChoicesCanRecoverLegalBoard() {
++        val raw = standardStartRecognition()
++        val noisy = raw.squares.mapIndexed { index, square ->
++            val probabilities = square.classProbabilities.copyOf()
++            val logical = Square(index % 8, 7 - index / 8)
++            if (logical == Square(4, 0)) {
++                probabilities.fill(0.001f)
++                probabilities[PieceClass.WQ.ordinal] = 0.60f
++                probabilities[PieceClass.WK.ordinal] = 0.30f
++            } else if (logical == Square(4, 7)) {
++                probabilities.fill(0.001f)
++                probabilities[PieceClass.BQ.ordinal] = 0.60f
++                probabilities[PieceClass.BK.ordinal] = 0.30f
++            }
++            SquareProbabilities(probabilities)
++        }
++        val logicalSquares = OrientationResolver().normalize(noisy, BoardOrientation.WHITE_BOTTOM)
++        val result = RecognitionTracker(confirmFrames = 1).accept(raw.copy(squares = logicalSquares))
++        assertTrue(result is TrackingResult.Confirmed)
++    }
++
++    private fun confirmedStart(): ConfirmedPosition = ConfirmedPosition(
++        position = FenCodec.parse("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
++        confidence = .99f,
++        quad = BoardQuad(PointFModel(0f, 0f), PointFModel(800f, 0f), PointFModel(800f, 800f), PointFModel(0f, 800f)),
++        orientation = BoardOrientation.WHITE_BOTTOM,
++        inferredMove = null,
++    )
++
++    private fun standardStartRecognition(): BoardRecognition {
++        val position = FenCodec.parse("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
++        val squares = ArrayList<SquareProbabilities>(64)
++        for (row in 0..7) for (col in 0..7) {
++            val logical = Square(col, 7 - row)
++            val pieceClass = pieceClass(position.board[logical.index])
++            val probabilities = FloatArray(PieceClass.entries.size) { 0.001f }
++            probabilities[pieceClass.ordinal] = 0.988f
++            squares += SquareProbabilities(probabilities)
++        }
++        return BoardRecognition(
++            quad = BoardQuad(PointFModel(100f, 200f), PointFModel(900f, 200f), PointFModel(900f, 1000f), PointFModel(100f, 1000f)),
++            orientationHint = BoardOrientation.WHITE_BOTTOM,
++            squares = squares,
++            boardConfidence = .99f,
++            capturedAtElapsedMs = 0L,
++        )
++    }
++
++    private fun pieceClass(piece: Piece?): PieceClass = when (piece) {
++        null -> PieceClass.EMPTY
++        Piece(Color.WHITE, PieceType.PAWN) -> PieceClass.WP
++        Piece(Color.WHITE, PieceType.KNIGHT) -> PieceClass.WN
++        Piece(Color.WHITE, PieceType.BISHOP) -> PieceClass.WB
++        Piece(Color.WHITE, PieceType.ROOK) -> PieceClass.WR
++        Piece(Color.WHITE, PieceType.QUEEN) -> PieceClass.WQ
++        Piece(Color.WHITE, PieceType.KING) -> PieceClass.WK
++        Piece(Color.BLACK, PieceType.PAWN) -> PieceClass.BP
++        Piece(Color.BLACK, PieceType.KNIGHT) -> PieceClass.BN
++        Piece(Color.BLACK, PieceType.BISHOP) -> PieceClass.BB
++        Piece(Color.BLACK, PieceType.ROOK) -> PieceClass.BR
++        Piece(Color.BLACK, PieceType.QUEEN) -> PieceClass.BQ
++        Piece(Color.BLACK, PieceType.KING) -> PieceClass.BK
++        else -> error("Unexpected piece")
++    }
++
++    private fun checkerFrame(width: Int, height: Int, left: Int, top: Int, size: Int, highlighted: Set<Int>): NormalizedFrame {
++        val rgba = ByteArray(width * height * 4)
++        fun put(x: Int, y: Int, r: Int, g: Int, b: Int) {
++            val i = (y * width + x) * 4
++            rgba[i] = r.toByte(); rgba[i + 1] = g.toByte(); rgba[i + 2] = b.toByte(); rgba[i + 3] = 255.toByte()
++        }
++        for (y in 0 until height) for (x in 0 until width) put(x, y, 28, 31, 36)
++        val cell = size / 8
++        for (row in 0..7) for (col in 0..7) {
++            val index = row * 8 + col
++            val base = if ((row + col) % 2 == 0) intArrayOf(235, 236, 208) else intArrayOf(119, 149, 86)
++            val color = if (index in highlighted) intArrayOf(246, 246, 105) else base
++            for (y in top + row * cell until top + (row + 1) * cell) for (x in left + col * cell until left + (col + 1) * cell) {
++                put(x, y, color[0], color[1], color[2])
++            }
++        }
++        return NormalizedFrame(width, height, rgba, 0, 0)
++    }
++
++    private class FakeEngine : ChessEngine {
++        private val mutableAnalysis = MutableStateFlow<EngineAnalysis?>(null)
++        override val analysis: StateFlow<EngineAnalysis?> = mutableAnalysis
++        val analyzed = mutableListOf<String>()
++        override suspend fun analyze(fen: String, config: EngineConfig) { analyzed += fen }
++        override suspend fun stop() = Unit
++        override suspend fun close() = Unit
++    }
++}
