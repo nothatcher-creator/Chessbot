@@ -53,11 +53,20 @@ jobs:
         with:
           gradle-version: '9.6.0'
 
+      - name: Cache Stockfish Android binaries
+        id: stockfish-cache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/jniLibs
+          key: stockfish19-android-ndk28-r1
+
       - name: Fetch Stockfish 19
+        if: steps.stockfish-cache.outputs.cache-hit != 'true'
         shell: bash
         run: bash scripts/fetch_stockfish_19.sh
 
       - name: Build Stockfish for Android
+        if: steps.stockfish-cache.outputs.cache-hit != 'true'
         shell: bash
         run: bash scripts/build_stockfish_android.sh
 
@@ -73,6 +82,15 @@ jobs:
             exit "$status"
           fi
           tail -n 80 /tmp/gradle.log
+
+      - name: Upload Gradle diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-diagnostics
+          path: /tmp/gradle.log
+          if-no-files-found: ignore
+          retention-days: 2
 
       - name: Verify APK exists
         shell: bash
