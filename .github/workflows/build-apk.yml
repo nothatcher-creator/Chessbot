@@ -2,7 +2,7 @@ name: Build ChessOverlay APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/lichess-dom-adapter]
   workflow_dispatch:
 
 permissions:
@@ -33,6 +33,15 @@ jobs:
           git apply --check /tmp/detection-fix.patch
           git apply /tmp/detection-fix.patch
           test -f app/src/test/java/com/nothatcher/chessoverlay/regression/DetectionRegressionTest.kt
+
+          cat websrc/lichess-dom-*.b64.part > /tmp/lichess-dom.b64
+          echo 'ca36b2d74aae424bd3565b2ce641447b287e435687784183df0d1d6f6fa9c4b6  /tmp/lichess-dom.b64' | sha256sum -c -
+          base64 -d /tmp/lichess-dom.b64 > /tmp/lichess-dom.tar.gz
+          echo '55db02755dabb5801e00adfab4a9caac533ed8aecf60e59d9b29e3bc90d68d2c  /tmp/lichess-dom.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/lichess-dom.tar.gz
+          test -f app/src/main/java/com/nothatcher/chessoverlay/browser/LichessBrowserActivity.kt
+          test -f app/src/main/assets/lichess_adapter.js
+          test -f app/src/test/java/com/nothatcher/chessoverlay/browser/LichessSitePolicyTest.kt
 
           sed -i 's/compileSdk = 37/compileSdk = 36/g' app/build.gradle.kts
           sed -i 's/2026\.08\.01/2026.06.00/g; s/2026\.08\.00/2026.06.00/g' gradle/libs.versions.toml
@@ -67,6 +76,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/validate_lichess_model.py
+
+      - name: Test Lichess DOM adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/test_lichess_adapter.js
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -152,9 +167,10 @@ jobs:
           apk='app/build/outputs/apk/debug/app-debug.apk'
           test -s "$apk"
           unzip -t "$apk" >/dev/null
-          unzip -l "$apk" | grep -E 'AndroidManifest.xml|classes.*dex|lib/.*/libstockfish\.so|assets/piece_mlp.bin'
+          unzip -l "$apk" | grep -E 'AndroidManifest.xml|classes.*dex|lib/.*/libstockfish\.so|assets/piece_mlp.bin|assets/lichess_adapter.js'
           unzip -p "$apk" assets/piece_mlp.bin > /tmp/piece_mlp.bin
           echo '2e6579341f341e0e53f848981ff410a4ccb2e2d996ae608ef534f95c79f2c0d8  /tmp/piece_mlp.bin' | sha256sum -c -
+          test "$(unzip -l "$apk" | grep -c 'assets/lichess_adapter.js')" -ge 1
           test "$(unzip -l "$apk" | grep -c 'lib/arm64-v8a/libstockfish.so')" -ge 1
           test "$(unzip -l "$apk" | grep -c 'lib/x86_64/libstockfish.so')" -ge 1
           ls -lh "$apk"
