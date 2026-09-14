@@ -1,0 +1,173 @@
+     initialAnalysisContext: AnalysisContext = AnalysisContext.ANALYSIS_BOARD,
+ ) {
+     private var analysisContext: AnalysisContext = initialAnalysisContext
+-    private val _state = MutableStateFlow(SessionUiState(mode = initialMode))
++    private val _state = MutableStateFlow(SessionUiState(mode = initialMode, analysisContext = initialAnalysisContext))
+     val state: StateFlow<SessionUiState> = _state.asStateFlow()
+ 
+     suspend fun acceptConfirmedPosition(confirmed: ConfirmedPosition) {
+@@ -29,7 +29,7 @@ class SessionCoordinator(
+             } else null,
+         )
+ 
+-        if (_state.value.mode.analysisPermission() == AnalysisPermission.FORBIDDEN || !analysisContext.allowsEngineHints()) {
++        if (!_state.value.mode.allowsEngineHints(analysisContext)) {
+             _state.value = _state.value.copy(analysis = null)
+             return
+         }
+@@ -40,28 +40,33 @@ class SessionCoordinator(
+ 
+     suspend fun setAnalysisContext(context: AnalysisContext) {
+         if (analysisContext == context) return
+-        val wasAllowed = analysisContext.allowsEngineHints() && _state.value.mode.analysisPermission() == AnalysisPermission.ALLOWED
++        val wasAllowed = _state.value.mode.allowsEngineHints(analysisContext)
+         analysisContext = context
+-        val nowAllowed = analysisContext.allowsEngineHints() && _state.value.mode.analysisPermission() == AnalysisPermission.ALLOWED
++        _state.value = _state.value.copy(analysisContext = context)
++        val nowAllowed = _state.value.mode.allowsEngineHints(analysisContext)
+         if (wasAllowed && !nowAllowed) engine.stop()
+         if (!nowAllowed) {
+             _state.value = _state.value.copy(
+                 analysis = null,
+                 statusMessage = if (context == AnalysisContext.LIVE_HUMAN) "Live human game: engine hints are disabled." else _state.value.statusMessage,
+             )
++        } else {
++            _state.value = _state.value.copy(statusMessage = null)
++            if (!wasAllowed) analyzeCurrentPositionIfStable()
+         }
+     }
+ 
+     suspend fun setMode(mode: SessionMode) {
+         if (_state.value.mode == mode) return
+-        val wasAllowed = _state.value.mode.analysisPermission() == AnalysisPermission.ALLOWED
+-        val nowAllowed = mode.analysisPermission() == AnalysisPermission.ALLOWED
++        val wasAllowed = _state.value.mode.allowsEngineHints(analysisContext)
++        val nowAllowed = mode.allowsEngineHints(analysisContext)
+         if (wasAllowed && !nowAllowed) engine.stop()
+         _state.value = _state.value.copy(
+             mode = mode,
+             analysis = if (nowAllowed) _state.value.analysis else null,
+             statusMessage = if (!nowAllowed) "Engine move suggestions are disabled while scanning." else null,
+         )
++        if (!wasAllowed && nowAllowed) analyzeCurrentPositionIfStable()
+     }
+ 
+     fun updateCaptureState(captureState: com.nothatcher.chessoverlay.capture.CaptureState) {
+@@ -90,8 +95,7 @@ class SessionCoordinator(
+ 
+     fun acceptEngineAnalysis(analysis: com.nothatcher.chessoverlay.engine.EngineAnalysis?) {
+         _state.value = if (
+-            _state.value.mode.analysisPermission() == AnalysisPermission.ALLOWED &&
+-            analysisContext.allowsEngineHints() &&
++            _state.value.mode.allowsEngineHints(analysisContext) &&
+             _state.value.recognitionStatus == RecognitionStatus.STABLE
+         ) {
+             _state.value.copy(analysis = analysis)
+@@ -100,10 +104,17 @@ class SessionCoordinator(
+         }
+     }
+ 
++    private suspend fun analyzeCurrentPositionIfStable() {
++        if (_state.value.recognitionStatus != RecognitionStatus.STABLE) return
++        val fen = _state.value.lastConfirmedFen ?: return
++        engine.analyze(fen, configProvider())
++        publishAnalysisIfAllowed()
++    }
++
+     fun refreshAnalysisForTest() = publishAnalysisIfAllowed()
+ 
+     private fun publishAnalysisIfAllowed() {
+-        _state.value = if (_state.value.mode.analysisPermission() == AnalysisPermission.ALLOWED && analysisContext.allowsEngineHints()) {
++        _state.value = if (_state.value.mode.allowsEngineHints(analysisContext)) {
+             _state.value.copy(analysis = engine.analysis.value)
+         } else {
+             _state.value.copy(analysis = null)
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/session/SessionUiState.kt b/app/src/main/java/com/nothatcher/chessoverlay/session/SessionUiState.kt
+index 48b2097..6170c60 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/session/SessionUiState.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/session/SessionUiState.kt
+@@ -19,6 +19,7 @@ data class ConfirmedPosition(
+ 
+ data class SessionUiState(
+     val mode: SessionMode,
++    val analysisContext: AnalysisContext = AnalysisContext.LIVE_HUMAN,
+     val captureState: CaptureState = CaptureState.IDLE,
+     val recognitionStatus: RecognitionStatus = RecognitionStatus.LOOKING_FOR_BOARD,
+     val confirmedPosition: ConfirmedPosition? = null,
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/ui/App.kt b/app/src/main/java/com/nothatcher/chessoverlay/ui/App.kt
+index 90d411c..86ad3f6 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/ui/App.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/ui/App.kt
+@@ -36,7 +36,6 @@ fun ChessOverlayApp(
+                 Screen.HOME -> HomeScreen(
+                     state = state,
+                     preferences = preferences,
+-                    analysisContext = runtime.currentAnalysisContext(),
+                     overlayGranted = overlayPermission,
+                     engineError = engineError,
+                     onMode = runtime::setMode,
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/ui/HomeScreen.kt b/app/src/main/java/com/nothatcher/chessoverlay/ui/HomeScreen.kt
+index f307e90..df1cf03 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/ui/HomeScreen.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/ui/HomeScreen.kt
+@@ -11,13 +11,13 @@ import com.nothatcher.chessoverlay.capture.CaptureState
+ import com.nothatcher.chessoverlay.session.AnalysisContext
+ import com.nothatcher.chessoverlay.session.SessionMode
+ import com.nothatcher.chessoverlay.session.SessionUiState
++import com.nothatcher.chessoverlay.session.allowsEngineHints
+ import com.nothatcher.chessoverlay.settings.UserPreferences
+ 
+ @Composable
+ fun HomeScreen(
+     state: SessionUiState,
+     preferences: UserPreferences,
+-    analysisContext: AnalysisContext,
+     overlayGranted: Boolean,
+     engineError: String?,
+     onMode: (SessionMode) -> Unit,
+@@ -30,6 +30,7 @@ fun HomeScreen(
+     onRecognitionSettings: () -> Unit,
+     onAbout: () -> Unit,
+ ) {
++    val analysisContext = state.analysisContext
+     Column(
+         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+         verticalArrangement = Arrangement.spacedBy(14.dp),
+@@ -86,7 +87,7 @@ fun HomeScreen(
+ 
+         SectionCard("Best move") {
+             val analysis = state.analysis
+-            if (analysisContext == AnalysisContext.LIVE_HUMAN || state.mode == SessionMode.SCAN_ONLY) {
++            if (!state.mode.allowsEngineHints(analysisContext)) {
+                 Text("Hidden in this mode")
+             } else if (analysis?.bestMoveUci == null) {
+                 Text("Waiting for a stable board and Stockfish…")
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/vision/AxisAlignedBoardLocator.kt b/app/src/main/java/com/nothatcher/chessoverlay/vision/AxisAlignedBoardLocator.kt
+index 6e9b470..fc234c6 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/vision/AxisAlignedBoardLocator.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/vision/AxisAlignedBoardLocator.kt
+@@ -27,7 +27,7 @@ class AxisAlignedBoardLocator(
+         val minDim = minOf(frame.width, frame.height)
+         var best: DetectedBoard? = null
+         var fraction = 1.0
+-        while (fraction >= 0.50 - 1e-6) {
++        while (fraction >= 0.30 - 1e-6) {
+             val raw = (minDim * fraction).roundToInt()
+             val size = (raw / 8) * 8
+             if (size >= 8 * 16 && size <= minDim) {
+diff --git a/app/src/test/java/com/nothatcher/chessoverlay/regression/DetectionRegressionTest.kt b/app/src/test/java/com/nothatcher/chessoverlay/regression/DetectionRegressionTest.kt
+new file mode 100644
+index 0000000..ce83070
+--- /dev/null
++++ b/app/src/test/java/com/nothatcher/chessoverlay/regression/DetectionRegressionTest.kt
+@@ -0,0 +1,168 @@
++package com.nothatcher.chessoverlay.regression
++
++import com.nothatcher.chessoverlay.capture.NormalizedFrame
++import com.nothatcher.chessoverlay.chess.*
++import com.nothatcher.chessoverlay.engine.*
++import com.nothatcher.chessoverlay.overlay.geometry.BoardQuad
++import com.nothatcher.chessoverlay.overlay.geometry.PointFModel
++import com.nothatcher.chessoverlay.session.*
++import com.nothatcher.chessoverlay.vision.*
++import kotlinx.coroutines.flow.MutableStateFlow
