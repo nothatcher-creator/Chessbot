@@ -1,0 +1,176 @@
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/AppRuntime.kt b/app/src/main/java/com/nothatcher/chessoverlay/AppRuntime.kt
+index 71f3ae9..2274d2f 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/AppRuntime.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/AppRuntime.kt
+@@ -16,8 +16,6 @@ import com.nothatcher.chessoverlay.session.LiveAnalysisPipeline
+ import com.nothatcher.chessoverlay.session.RecognitionStatus
+ import com.nothatcher.chessoverlay.session.SessionCoordinator
+ import com.nothatcher.chessoverlay.session.SessionMode
+-import com.nothatcher.chessoverlay.session.analysisPermission
+-import com.nothatcher.chessoverlay.session.AnalysisPermission
+ import com.nothatcher.chessoverlay.session.allowsEngineHints
+ import com.nothatcher.chessoverlay.settings.EngineProfileName
+ import com.nothatcher.chessoverlay.settings.EngineProfilePolicy
+@@ -55,13 +53,12 @@ class AppRuntime(private val context: Context) {
+     val engineError: StateFlow<String?> = _engineError.asStateFlow()
+     private val engine: ChessEngine = createEngine()
+     @Volatile private var currentPrefs = UserPreferences.DEFAULT
+-    @Volatile private var analysisContext = AnalysisContext.LIVE_HUMAN
+ 
+     val coordinator = SessionCoordinator(
+         initialMode = currentPrefs.mode,
+         engine = engine,
+         configProvider = { EngineProfilePolicy.config(currentPrefs.engineProfile) },
+-        initialAnalysisContext = analysisContext,
++        initialAnalysisContext = AnalysisContext.LIVE_HUMAN,
+     )
+     val state = coordinator.state
+ 
+@@ -97,7 +94,7 @@ class AppRuntime(private val context: Context) {
+         scope.launch {
+             coordinator.state.collectLatest { s ->
+                 val confirmed = s.confirmedPosition
+-                val hintsAllowed = s.mode.analysisPermission() == AnalysisPermission.ALLOWED && analysisContext.allowsEngineHints()
++                val hintsAllowed = s.mode.allowsEngineHints(s.analysisContext)
+                 OverlayController.publish(
+                     OverlayState(
+                         mode = s.mode,
+@@ -119,7 +116,6 @@ class AppRuntime(private val context: Context) {
+     }
+ 
+     fun setAnalysisContext(value: AnalysisContext) {
+-        analysisContext = value
+         scope.launch { coordinator.setAnalysisContext(value) }
+     }
+ 
+@@ -139,7 +135,7 @@ class AppRuntime(private val context: Context) {
+         scope.launch { settings.setDiagnostics(showEvaluation, showDepth, showNodes) }
+     }
+ 
+-    fun currentAnalysisContext(): AnalysisContext = analysisContext
++    fun currentAnalysisContext(): AnalysisContext = state.value.analysisContext
+ 
+     fun close() {
+         scope.launch { engine.close() }
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/chess/RecognitionTracker.kt b/app/src/main/java/com/nothatcher/chessoverlay/chess/RecognitionTracker.kt
+index 3fc2f04..1385ec4 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/chess/RecognitionTracker.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/chess/RecognitionTracker.kt
+@@ -117,7 +117,7 @@ class RecognitionTracker(
+             }.sortedByDescending { it.logP }.take(maxCandidates)
+         }
+ 
+-        return beam.map { b ->
++        val primary = beam.map { b ->
+             val selectedMean = b.selectedProbSum / 64f
+             PositionCandidate(
+                 board = b.board,
+@@ -125,6 +125,64 @@ class RecognitionTracker(
+                 confidence = (observation.boardConfidence * selectedMean).coerceIn(0f, 1f),
+             )
+         }.filter { basicBoardPlausible(it.board) }
++
++        val fallback = kingAwareFallback(observation)
++        return if (fallback != null && primary.none { it.board == fallback.board }) primary + fallback else primary
++    }
++
++    private fun kingAwareFallback(observation: BoardRecognition): PositionCandidate? {
++        val whiteKing = PieceClass.WK.ordinal
++        val blackKing = PieceClass.BK.ordinal
++        val whiteCandidates = observation.squares.indices
++            .sortedByDescending { observation.squares[it].classProbabilities[whiteKing] }
++            .take(4)
++        val blackCandidates = observation.squares.indices
++            .sortedByDescending { observation.squares[it].classProbabilities[blackKing] }
++            .take(4)
++
++        var best: PositionCandidate? = null
++        for (wkSquare in whiteCandidates) for (bkSquare in blackCandidates) {
++            if (wkSquare == bkSquare) continue
++            val wkProbability = observation.squares[wkSquare].classProbabilities[whiteKing]
++            val bkProbability = observation.squares[bkSquare].classProbabilities[blackKing]
++            if (wkProbability < 0.08f || bkProbability < 0.08f) continue
++
++            val board = MutableList<Piece?>(64) { null }
++            var logP = 0.0
++            var probabilitySum = 0f
++            for (squareIndex in 0 until 64) {
++                val probabilities = observation.squares[squareIndex].classProbabilities
++                val classIndex = when (squareIndex) {
++                    wkSquare -> whiteKing
++                    bkSquare -> blackKing
++                    else -> bestNonKingClass(probabilities, squareIndex / 8)
++                }
++                val probability = probabilities[classIndex].coerceAtLeast(1e-6f)
++                board[squareIndex] = PieceClass.entries[classIndex].toPieceOrNull()
++                logP += ln(probability.toDouble())
++                probabilitySum += probability
++            }
++            if (!basicBoardPlausible(board)) continue
++            val candidate = PositionCandidate(
++                board = board,
++                logProbability = logP,
++                confidence = (observation.boardConfidence * (probabilitySum / 64f)).coerceIn(0f, 1f),
++            )
++            if (best == null || candidate.logProbability > best.logProbability) best = candidate
++        }
++        return best
++    }
++
++    private fun bestNonKingClass(probabilities: FloatArray, rank: Int): Int {
++        return probabilities.indices
++            .asSequence()
++            .filter { it != PieceClass.WK.ordinal && it != PieceClass.BK.ordinal }
++            .filter { index ->
++                if (rank != 0 && rank != 7) true
++                else index != PieceClass.WP.ordinal && index != PieceClass.BP.ordinal
++            }
++            .maxByOrNull { probabilities[it] }
++            ?: PieceClass.EMPTY.ordinal
+     }
+ 
+     private fun initialPosition(board: List<Piece?>): Position {
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/session/AnalysisPermission.kt b/app/src/main/java/com/nothatcher/chessoverlay/session/AnalysisPermission.kt
+index 066ea17..2f750e7 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/session/AnalysisPermission.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/session/AnalysisPermission.kt
+@@ -6,3 +6,9 @@ fun SessionMode.analysisPermission(): AnalysisPermission = when (this) {
+     SessionMode.PRACTICE, SessionMode.POST_GAME_REVIEW -> AnalysisPermission.ALLOWED
+     SessionMode.SCAN_ONLY -> AnalysisPermission.FORBIDDEN
+ }
++
++fun SessionMode.allowsEngineHints(context: AnalysisContext): Boolean = when (this) {
++    SessionMode.SCAN_ONLY -> false
++    SessionMode.POST_GAME_REVIEW -> true
++    SessionMode.PRACTICE -> context.allowsEngineHints()
++}
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/session/LiveAnalysisPipeline.kt b/app/src/main/java/com/nothatcher/chessoverlay/session/LiveAnalysisPipeline.kt
+index 2496471..9888301 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/session/LiveAnalysisPipeline.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/session/LiveAnalysisPipeline.kt
+@@ -14,15 +14,19 @@ class LiveAnalysisPipeline(
+     private val orientationResolver: OrientationResolver,
+     private val tracker: RecognitionTracker,
+     private val coordinator: SessionCoordinator,
++    private val transientMissTolerance: Int = 1,
+ ) {
+     private var previousOrientation: OrientationDecision? = null
++    private var consecutiveMisses = 0
+ 
+     suspend fun acceptFrame(frame: NormalizedFrame) {
+         val raw = recognizer.recognize(frame)
+         if (raw == null) {
+-            coordinator.markBoardMissing()
++            consecutiveMisses++
++            if (consecutiveMisses > transientMissTolerance) coordinator.markBoardMissing()
+             return
+         }
++        consecutiveMisses = 0
+ 
+         val orientation = orientationResolver.resolve(raw, previousOrientation)
+         previousOrientation = orientation
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/session/SessionCoordinator.kt b/app/src/main/java/com/nothatcher/chessoverlay/session/SessionCoordinator.kt
+index 4d5a9d9..944ea55 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/session/SessionCoordinator.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/session/SessionCoordinator.kt
+@@ -14,7 +14,7 @@ class SessionCoordinator(
