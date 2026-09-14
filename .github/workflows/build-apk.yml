@@ -28,6 +28,12 @@ jobs:
           test -f app/src/main/AndroidManifest.xml
           test -f gradle/libs.versions.toml
 
+          cat patches/detection-fix-*.patch.part > /tmp/detection-fix.patch
+          echo '9cbc368645cb8f724a0b3bbb14c737f41982de8e9d9c76b4789626f0034f1125  /tmp/detection-fix.patch' | sha256sum -c -
+          git apply --check /tmp/detection-fix.patch
+          git apply /tmp/detection-fix.patch
+          test -f app/src/test/java/com/nothatcher/chessoverlay/regression/DetectionRegressionTest.kt
+
           sed -i 's/compileSdk = 37/compileSdk = 36/g' app/build.gradle.kts
           sed -i 's/2026\.08\.01/2026.06.00/g; s/2026\.08\.00/2026.06.00/g' gradle/libs.versions.toml
           sed -i 's/2\.11\.0/2.10.0/g' gradle/libs.versions.toml
@@ -80,6 +86,12 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.6.0'
+
+      - name: Run regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon testDebugUnitTest --stacktrace
 
       - name: Restore Stockfish Android cache
         id: stockfish-cache
