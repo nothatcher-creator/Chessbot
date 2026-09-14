@@ -63,7 +63,16 @@ jobs:
 
       - name: Assemble debug APK
         shell: bash
-        run: gradle --no-daemon assembleDebug --stacktrace
+        run: |
+          set +e
+          gradle --no-daemon assembleDebug --stacktrace > /tmp/gradle.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            echo '===== GRADLE FAILURE TAIL ====='
+            tail -n 250 /tmp/gradle.log
+            exit "$status"
+          fi
+          tail -n 80 /tmp/gradle.log
 
       - name: Verify APK exists
         shell: bash
