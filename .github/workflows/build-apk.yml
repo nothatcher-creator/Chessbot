@@ -26,19 +26,19 @@ jobs:
           tar -xzf /tmp/chessoverlay.tar.gz
           test -f app/build.gradle.kts
           test -f app/src/main/AndroidManifest.xml
+          test -f gradle/libs.versions.toml
 
-          # GitHub's current stable SDK channel exposes API 36 on this runner.
+          # GitHub's stable SDK channel on this runner exposes API 36.
           sed -i 's/compileSdk = 37/compileSdk = 36/g' app/build.gradle.kts
 
-          # Compose 1.12 / Lifecycle 2.11 require compileSdk 37. Pin the last
-          # API-36-compatible stable generation while keeping app behavior intact.
-          sed -i 's/compose-bom:2026\.08\.00/compose-bom:2026.06.00/g' app/build.gradle.kts
-          sed -i 's/compose-bom:2026\.08\.01/compose-bom:2026.06.00/g' app/build.gradle.kts
-          sed -i 's/lifecycle-runtime-compose:2\.11\.0/lifecycle-runtime-compose:2.10.0/g' app/build.gradle.kts
-          sed -i 's/lifecycle-viewmodel-compose:2\.11\.0/lifecycle-viewmodel-compose:2.10.0/g' app/build.gradle.kts
-          sed -i 's/lifecycle-viewmodel-ktx:2\.11\.0/lifecycle-viewmodel-ktx:2.10.0/g' app/build.gradle.kts
-          sed -i 's/lifecycle-runtime-ktx:2\.11\.0/lifecycle-runtime-ktx:2.10.0/g' app/build.gradle.kts
+          # The project resolves AndroidX through this version catalog.
+          # Compose 1.12 / Lifecycle 2.11 require compileSdk 37, so pin the
+          # last API-36-compatible generation for this build.
+          sed -i 's/2026\.08\.01/2026.06.00/g; s/2026\.08\.00/2026.06.00/g' gradle/libs.versions.toml
+          sed -i 's/2\.11\.0/2.10.0/g' gradle/libs.versions.toml
 
+          echo '===== PATCHED VERSION CATALOG ====='
+          cat gradle/libs.versions.toml
           echo '===== PATCHED APP BUILD FILE ====='
           sed -n '1,240p' app/build.gradle.kts
 
@@ -99,10 +99,10 @@ jobs:
           status=$?
           if [ "$status" -ne 0 ]; then
             echo '===== GRADLE FAILURE TAIL ====='
-            tail -n 300 /tmp/gradle.log
+            tail -n 350 /tmp/gradle.log
             exit "$status"
           fi
-          tail -n 100 /tmp/gradle.log
+          tail -n 120 /tmp/gradle.log
 
       - name: Upload Gradle diagnostics
         if: failure()
@@ -116,7 +116,10 @@ jobs:
       - name: Verify APK exists
         shell: bash
         run: |
+          set -euo pipefail
           test -s app/build/outputs/apk/debug/app-debug.apk
+          unzip -t app/build/outputs/apk/debug/app-debug.apk >/dev/null
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -E 'AndroidManifest.xml|classes.*dex|lib/.*/stockfish' || true
           ls -lh app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload debug APK
