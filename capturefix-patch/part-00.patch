@@ -1,0 +1,134 @@
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/AppRuntime.kt b/app/src/main/java/com/nothatcher/chessoverlay/AppRuntime.kt
+index 2274d2f..3b71a92 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/AppRuntime.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/AppRuntime.kt
+@@ -95,6 +95,13 @@ class AppRuntime(private val context: Context) {
+             coordinator.state.collectLatest { s ->
+                 val confirmed = s.confirmedPosition
+                 val hintsAllowed = s.mode.allowsEngineHints(s.analysisContext)
++                val engineState = when {
++                    _engineError.value != null -> _engineError.value
++                    !hintsAllowed -> "Stockfish disabled"
++                    confirmed == null -> "Stockfish waiting for board"
++                    s.analysis == null -> "Stockfish starting"
++                    else -> "Stockfish active • depth ${s.analysis.depth}"
++                }
+                 OverlayController.publish(
+                     OverlayState(
+                         mode = s.mode,
+@@ -105,6 +112,9 @@ class AppRuntime(private val context: Context) {
+                         analysis = if (hintsAllowed) s.analysis else null,
+                         hintsAllowed = hintsAllowed,
+                         statusMessage = s.statusMessage,
++                        sourceLabel = if (s.captureState == com.nothatcher.chessoverlay.capture.CaptureState.RUNNING) "Screen capture" else null,
++                        fen = s.lastConfirmedFen,
++                        engineState = engineState,
+                     )
+                 )
+             }
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/capture/CaptureOverlayGate.kt b/app/src/main/java/com/nothatcher/chessoverlay/capture/CaptureOverlayGate.kt
+new file mode 100644
+index 0000000..a3bac44
+--- /dev/null
++++ b/app/src/main/java/com/nothatcher/chessoverlay/capture/CaptureOverlayGate.kt
+@@ -0,0 +1,44 @@
++package com.nothatcher.chessoverlay.capture
++
++enum class CaptureOverlayDecision {
++    CAPTURE,
++    REQUEST_HIDE,
++    WAIT_FOR_HIDE,
++    WAIT_FOR_SETTLE,
++}
++
++class CaptureOverlayGate(
++    private val settleMs: Long = 40L,
++) {
++    private var hideRequested = false
++
++    init {
++        require(settleMs >= 0L)
++    }
++
++    fun onFrame(
++        nowMs: Long,
++        overlayPresent: Boolean,
++        hiddenSinceMs: Long?,
++    ): CaptureOverlayDecision {
++        if (!overlayPresent) return CaptureOverlayDecision.CAPTURE
++        if (!hideRequested) {
++            hideRequested = true
++            return CaptureOverlayDecision.REQUEST_HIDE
++        }
++        val hiddenAt = hiddenSinceMs ?: return CaptureOverlayDecision.WAIT_FOR_HIDE
++        return if (nowMs - hiddenAt >= settleMs) {
++            CaptureOverlayDecision.CAPTURE
++        } else {
++            CaptureOverlayDecision.WAIT_FOR_SETTLE
++        }
++    }
++
++    fun onCaptureComplete() {
++        hideRequested = false
++    }
++
++    fun reset() {
++        hideRequested = false
++    }
++}
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/capture/CaptureOverlaySync.kt b/app/src/main/java/com/nothatcher/chessoverlay/capture/CaptureOverlaySync.kt
+new file mode 100644
+index 0000000..503d690
+--- /dev/null
++++ b/app/src/main/java/com/nothatcher/chessoverlay/capture/CaptureOverlaySync.kt
+@@ -0,0 +1,43 @@
++package com.nothatcher.chessoverlay.capture
++
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.asStateFlow
++
++object CaptureOverlaySync {
++    private val _hideRequested = MutableStateFlow(false)
++    val hideRequested: StateFlow<Boolean> = _hideRequested.asStateFlow()
++
++    @Volatile private var overlayPresent = false
++    @Volatile private var hiddenSince: Long? = null
++
++    fun setOverlayPresent(present: Boolean) {
++        overlayPresent = present
++        if (!present) releaseHide()
++    }
++
++    fun isOverlayPresent(): Boolean = overlayPresent
++
++    fun requestHide(): Boolean {
++        if (!overlayPresent) return false
++        hiddenSince = null
++        _hideRequested.value = true
++        return true
++    }
++
++    fun acknowledgeHidden(nowMs: Long) {
++        if (overlayPresent && _hideRequested.value) hiddenSince = nowMs
++    }
++
++    fun hiddenSinceMs(): Long? = hiddenSince
++
++    fun releaseHide() {
++        hiddenSince = null
++        _hideRequested.value = false
++    }
++
++    internal fun resetForTest() {
++        overlayPresent = false
++        releaseHide()
++    }
++}
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/capture/MediaProjectionService.kt b/app/src/main/java/com/nothatcher/chessoverlay/capture/MediaProjectionService.kt
+index b941627..e007ea7 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/capture/MediaProjectionService.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/capture/MediaProjectionService.kt
+@@ -31,6 +31,7 @@ class MediaProjectionService : Service() {
+     private var workerHandler: Handler? = null
+     private var lastSampleMs = Long.MIN_VALUE
