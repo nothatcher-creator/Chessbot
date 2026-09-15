@@ -1,0 +1,135 @@
+new file mode 100644
+index 0000000..9ff0d61
+--- /dev/null
++++ b/app/src/test/java/com/nothatcher/chessoverlay/capture/CaptureOverlayGateTest.kt
+@@ -0,0 +1,25 @@
++package com.nothatcher.chessoverlay.capture
++
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++class CaptureOverlayGateTest {
++    @Test
++    fun visibleOverlayMustBeHiddenAndSettledBeforeCapture() {
++        val gate = CaptureOverlayGate(settleMs = 40)
++
++        assertEquals(CaptureOverlayDecision.REQUEST_HIDE, gate.onFrame(1000, overlayPresent = true, hiddenSinceMs = null))
++        assertEquals(CaptureOverlayDecision.WAIT_FOR_HIDE, gate.onFrame(1010, overlayPresent = true, hiddenSinceMs = null))
++        assertEquals(CaptureOverlayDecision.WAIT_FOR_SETTLE, gate.onFrame(1030, overlayPresent = true, hiddenSinceMs = 1020))
++        assertEquals(CaptureOverlayDecision.CAPTURE, gate.onFrame(1060, overlayPresent = true, hiddenSinceMs = 1020))
++
++        gate.onCaptureComplete()
++        assertEquals(CaptureOverlayDecision.REQUEST_HIDE, gate.onFrame(1500, overlayPresent = true, hiddenSinceMs = null))
++    }
++
++    @Test
++    fun captureCanProceedImmediatelyWhenNoOverlayIsPresent() {
++        val gate = CaptureOverlayGate(settleMs = 40)
++        assertEquals(CaptureOverlayDecision.CAPTURE, gate.onFrame(1000, overlayPresent = false, hiddenSinceMs = null))
++    }
++}
+diff --git a/app/src/test/java/com/nothatcher/chessoverlay/capture/CaptureOverlaySyncTest.kt b/app/src/test/java/com/nothatcher/chessoverlay/capture/CaptureOverlaySyncTest.kt
+new file mode 100644
+index 0000000..8fd072e
+--- /dev/null
++++ b/app/src/test/java/com/nothatcher/chessoverlay/capture/CaptureOverlaySyncTest.kt
+@@ -0,0 +1,32 @@
++package com.nothatcher.chessoverlay.capture
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class CaptureOverlaySyncTest {
++    @Test
++    fun requestAckReleaseHandshakeTracksHiddenTimestamp() {
++        CaptureOverlaySync.resetForTest()
++        CaptureOverlaySync.setOverlayPresent(true)
++
++        assertTrue(CaptureOverlaySync.requestHide())
++        assertTrue(CaptureOverlaySync.hideRequested.value)
++        assertNull(CaptureOverlaySync.hiddenSinceMs())
++
++        CaptureOverlaySync.acknowledgeHidden(1234L)
++        assertEquals(1234L, CaptureOverlaySync.hiddenSinceMs())
++
++        CaptureOverlaySync.releaseHide()
++        assertFalse(CaptureOverlaySync.hideRequested.value)
++        assertNull(CaptureOverlaySync.hiddenSinceMs())
++    }
++
++    @Test
++    fun requestHideIsSkippedWhenOverlayIsNotPresent() {
++        CaptureOverlaySync.resetForTest()
++        assertFalse(CaptureOverlaySync.requestHide())
++    }
++}
+diff --git a/app/src/test/java/com/nothatcher/chessoverlay/overlay/android/OverlayDiagnosticsFormatterTest.kt b/app/src/test/java/com/nothatcher/chessoverlay/overlay/android/OverlayDiagnosticsFormatterTest.kt
+new file mode 100644
+index 0000000..8d8cd2f
+--- /dev/null
++++ b/app/src/test/java/com/nothatcher/chessoverlay/overlay/android/OverlayDiagnosticsFormatterTest.kt
+@@ -0,0 +1,19 @@
++package com.nothatcher.chessoverlay.overlay.android
++
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class OverlayDiagnosticsFormatterTest {
++    @Test
++    fun screenDiagnosticsExposeFenAndEngineState() {
++        val text = OverlayDiagnosticsFormatter.format(
++            source = "Screen",
++            fen = "rnbqkbnr/pppp1ppp/8/4p2Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2",
++            engineState = "Stockfish starting",
++        )
++
++        assertTrue(text.contains("Source: Screen"))
++        assertTrue(text.contains("FEN:"))
++        assertTrue(text.contains("Stockfish starting"))
++    }
++}
+diff --git a/app/src/test/java/com/nothatcher/chessoverlay/overlay/android/OverlayDockPlannerTest.kt b/app/src/test/java/com/nothatcher/chessoverlay/overlay/android/OverlayDockPlannerTest.kt
+new file mode 100644
+index 0000000..f56b673
+--- /dev/null
++++ b/app/src/test/java/com/nothatcher/chessoverlay/overlay/android/OverlayDockPlannerTest.kt
+@@ -0,0 +1,36 @@
++package com.nothatcher.chessoverlay.overlay.android
++
++import com.nothatcher.chessoverlay.overlay.geometry.BoardBounds
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class OverlayDockPlannerTest {
++    @Test
++    fun docksAboveBoardWhenThereIsRoom() {
++        val position = OverlayDockPlanner.place(
++            screenWidth = 710,
++            screenHeight = 1536,
++            controlWidth = 568,
++            controlHeight = 110,
++            board = BoardBounds(0f, 346f, 710f, 1056f),
++            marginPx = 12,
++        )
++
++        assertTrue(position.y + 110 <= 346 - 12)
++    }
++
++    @Test
++    fun neverPlacesControlOutsideScreen() {
++        val position = OverlayDockPlanner.place(
++            screenWidth = 400,
++            screenHeight = 700,
++            controlWidth = 300,
++            controlHeight = 180,
++            board = BoardBounds(0f, 80f, 400f, 620f),
++            marginPx = 12,
++        )
++
++        assertTrue(position.x in 0..100)
++        assertTrue(position.y in 0..520)
++    }
++}
