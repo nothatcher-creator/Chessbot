@@ -1,0 +1,135 @@
++    fun place(
++        screenWidth: Int,
++        screenHeight: Int,
++        controlWidth: Int,
++        controlHeight: Int,
++        board: BoardBounds,
++        marginPx: Int,
++    ): OverlayDockPosition {
++        val maxX = (screenWidth - controlWidth).coerceAtLeast(0)
++        val maxY = (screenHeight - controlHeight).coerceAtLeast(0)
++        val centeredX = (((board.left + board.right) / 2f) - controlWidth / 2f)
++            .toInt()
++            .coerceIn(0, maxX)
++
++        val aboveY = board.top.toInt() - controlHeight - marginPx
++        if (aboveY >= 0) return OverlayDockPosition(centeredX, aboveY.coerceAtMost(maxY))
++
++        val belowY = board.bottom.toInt() + marginPx
++        if (belowY <= maxY) return OverlayDockPosition(centeredX, belowY.coerceAtLeast(0))
++
++        val leftX = board.left.toInt() - controlWidth - marginPx
++        if (leftX >= 0) {
++            val centeredY = (((board.top + board.bottom) / 2f) - controlHeight / 2f).toInt().coerceIn(0, maxY)
++            return OverlayDockPosition(leftX.coerceIn(0, maxX), centeredY)
++        }
++
++        val rightX = board.right.toInt() + marginPx
++        if (rightX <= maxX) {
++            val centeredY = (((board.top + board.bottom) / 2f) - controlHeight / 2f).toInt().coerceIn(0, maxY)
++            return OverlayDockPosition(rightX.coerceIn(0, maxX), centeredY)
++        }
++
++        return OverlayDockPosition(centeredX, 0.coerceIn(0, maxY))
++    }
++}
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayService.kt b/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayService.kt
+index cc4f0e8..720204c 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayService.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayService.kt
+@@ -5,9 +5,12 @@ import android.content.Intent
+ import android.content.res.Configuration
+ import android.graphics.PixelFormat
+ import android.os.IBinder
++import android.os.SystemClock
+ import android.view.Gravity
+ import android.view.MotionEvent
++import android.view.View
+ import android.view.WindowManager
++import com.nothatcher.chessoverlay.capture.CaptureOverlaySync
+ import com.nothatcher.chessoverlay.settings.SettingsRepository
+ import kotlinx.coroutines.CoroutineScope
+ import kotlinx.coroutines.Dispatchers
+@@ -75,15 +78,61 @@ class OverlayService : Service() {
+         content = control
+         controlParams = params
+ 
++        CaptureOverlaySync.setOverlayPresent(true)
++
+         scope.launch {
+             restorePosition(params, control)
+             OverlayController.state.collectLatest { state ->
+                 control.update(state)
+                 arrowView.update(state)
++                dockOutsideBoardIfNeeded(state, params, control)
++            }
++        }
++        scope.launch {
++            CaptureOverlaySync.hideRequested.collectLatest { hidden ->
++                val visibility = if (hidden) View.INVISIBLE else View.VISIBLE
++                control.visibility = visibility
++                arrowView.visibility = visibility
++                if (hidden) {
++                    control.postOnAnimation {
++                        CaptureOverlaySync.acknowledgeHidden(SystemClock.elapsedRealtime())
++                    }
++                }
+             }
+         }
+     }
+ 
++
++    private fun dockOutsideBoardIfNeeded(
++        state: OverlayState,
++        params: WindowManager.LayoutParams,
++        control: OverlayContent,
++    ) {
++        val board = state.boardQuad?.boundingRect() ?: return
++        control.post {
++            if (control.width <= 0 || control.height <= 0) return@post
++            val left = params.x
++            val top = params.y
++            val right = left + control.width
++            val bottom = top + control.height
++            val overlaps = left < board.right && right > board.left && top < board.bottom && bottom > board.top
++            if (!overlaps) return@post
++
++            val screen = wm.maximumWindowMetrics.bounds
++            val target = OverlayDockPlanner.place(
++                screenWidth = screen.width(),
++                screenHeight = screen.height(),
++                controlWidth = control.width,
++                controlHeight = control.height,
++                board = board,
++                marginPx = (12 * resources.displayMetrics.density).toInt().coerceAtLeast(1),
++            )
++            params.x = target.x
++            params.y = target.y
++            runCatching { wm.updateViewLayout(control, params) }
++        }
++    }
++
+     private suspend fun restorePosition(params: WindowManager.LayoutParams, control: OverlayContent) {
+         val p = settings.preferences.first()
+         val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+@@ -140,6 +189,7 @@ class OverlayService : Service() {
+     }
+ 
+     private fun removeWindows() {
++        CaptureOverlaySync.setOverlayPresent(false)
+         content?.let { runCatching { wm.removeView(it) } }
+         arrow?.let { runCatching { wm.removeView(it) } }
+         content = null; arrow = null; controlParams = null
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayState.kt b/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayState.kt
+index 0fbd28d..563789a 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayState.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayState.kt
+@@ -14,4 +14,7 @@ data class OverlayState(
+     val analysis: EngineAnalysis? = null,
+     val hintsAllowed: Boolean = false,
+     val statusMessage: String? = null,
++    val sourceLabel: String? = null,
++    val fen: String? = null,
++    val engineState: String? = null,
+ )
+diff --git a/app/src/test/java/com/nothatcher/chessoverlay/capture/CaptureOverlayGateTest.kt b/app/src/test/java/com/nothatcher/chessoverlay/capture/CaptureOverlayGateTest.kt
