@@ -1,0 +1,61 @@
+name: Export Full Reconstructed Source
+
+on:
+  push:
+    branches: [feature/unrestricted-detection]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct full source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat buildsrc/part-*.b64 > /tmp/chessoverlay.b64
+          base64 -d /tmp/chessoverlay.b64 > /tmp/chessoverlay.tar.gz
+          mkdir -p /tmp/fullsrc
+          tar -xzf /tmp/chessoverlay.tar.gz -C /tmp/fullsrc
+
+          cat patches/detection-fix-*.patch.part > /tmp/detection-fix.patch
+          cd /tmp/fullsrc
+          git init -q
+          git add -A
+          git -c user.name=CI -c user.email=ci@example.invalid commit -qm base
+          git apply /tmp/detection-fix.patch
+          cd "$GITHUB_WORKSPACE"
+
+          cat websrc-v2/part-*.b64 > /tmp/lichess-dom.b64
+          base64 -d /tmp/lichess-dom.b64 > /tmp/lichess-dom.tar.gz
+          echo '76a21f27c1e7502c3dd68a941ae92ecc1dbdfa3ee5c6288ff8f1ef63ca8e8c2e  /tmp/lichess-dom.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/lichess-dom.tar.gz -C /tmp/fullsrc
+
+          cd /tmp/fullsrc
+          sed -i 's/compileSdk = 37/compileSdk = 36/g' app/build.gradle.kts
+          sed -i 's/2026\.08\.01/2026.06.00/g; s/2026\.08\.00/2026.06.00/g' gradle/libs.versions.toml
+          sed -i 's/2\.11\.0/2.10.0/g' gradle/libs.versions.toml
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/nothatcher/chessoverlay/capture/MediaProjectionService.kt')
+          s = p.read_text()
+          old = 'val mediaProjection = manager.getMediaProjection(resultCode, data)'
+          if old in s:
+              s = s.replace(old, 'val mediaProjection = manager.getMediaProjection(resultCode, data) ?: error("MediaProjection unavailable")', 1)
+              p.write_text(s)
+          PY
+          rm -rf .git
+          tar -czf /tmp/chessoverlay-full-source.tar.gz .
+          test -f app/src/main/java/com/nothatcher/chessoverlay/browser/LichessBrowserActivity.kt
+          test -f app/src/main/assets/lichess_adapter.js
+          tar -tzf /tmp/chessoverlay-full-source.tar.gz | grep -q 'LichessBrowserActivity.kt'
+      - name: Upload full source
+        uses: actions/upload-artifact@v4
+        with:
+          name: reconstructed-full-source
+          path: /tmp/chessoverlay-full-source.tar.gz
+          retention-days: 1
