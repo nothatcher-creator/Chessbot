@@ -1,0 +1,135 @@
+     private val sampler = FrameSampler(changingFps = 5.0, stableFps = 2.0)
++    private val overlayGate = CaptureOverlayGate(settleMs = 18L)
+ 
+     private val projectionCallback = object : MediaProjection.Callback() {
+         override fun onStop() {
+@@ -115,9 +116,31 @@ class MediaProjectionService : Service() {
+         image.use {
+             val now = SystemClock.elapsedRealtime()
+             if (lastSampleMs != Long.MIN_VALUE && !sampler.shouldSample(now, lastSampleMs, CaptureBus.boardStable)) return
+-            lastSampleMs = now
+-            val frame = image.toNormalizedFrame(now)
+-            CaptureBus.emitFrame(frame)
++
++            when (
++                overlayGate.onFrame(
++                    nowMs = now,
++                    overlayPresent = CaptureOverlaySync.isOverlayPresent(),
++                    hiddenSinceMs = CaptureOverlaySync.hiddenSinceMs(),
++                )
++            ) {
++                CaptureOverlayDecision.REQUEST_HIDE -> {
++                    if (!CaptureOverlaySync.requestHide()) overlayGate.reset()
++                    return
++                }
++                CaptureOverlayDecision.WAIT_FOR_HIDE,
++                CaptureOverlayDecision.WAIT_FOR_SETTLE -> return
++                CaptureOverlayDecision.CAPTURE -> Unit
++            }
++
++            try {
++                lastSampleMs = now
++                val frame = image.toNormalizedFrame(now)
++                CaptureBus.emitFrame(frame)
++            } finally {
++                overlayGate.onCaptureComplete()
++                CaptureOverlaySync.releaseHide()
++            }
+         }
+     }
+ 
+@@ -163,6 +186,8 @@ class MediaProjectionService : Service() {
+     }
+ 
+     private fun releaseProjection(markRevoked: Boolean) {
++        overlayGate.reset()
++        CaptureOverlaySync.releaseHide()
+         reader?.setOnImageAvailableListener(null, null)
+         display?.release(); display = null
+         reader?.close(); reader = null
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayContent.kt b/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayContent.kt
+index e560710..8d0f24f 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayContent.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayContent.kt
+@@ -25,21 +25,27 @@ class OverlayContent(context: Context) : LinearLayout(context) {
+         title.textSize = 17f
+         detail.setTextColor(0xFFBFC6CE.toInt())
+         detail.textSize = 12f
++        detail.maxWidth = (resources.displayMetrics.widthPixels * 0.82f).toInt()
+         addView(title)
+         addView(detail)
+         update(OverlayState())
+     }
+ 
+     fun update(state: OverlayState) {
++        val diagnostics = OverlayDiagnosticsFormatter.format(
++            source = state.sourceLabel,
++            fen = state.fen,
++            engineState = state.engineState,
++        )
+         if (!state.hintsAllowed || state.mode == SessionMode.SCAN_ONLY) {
+             title.text = "Scan Only"
+-            detail.text = state.statusMessage ?: "Engine hints disabled"
++            detail.text = joinDetail(state.statusMessage ?: "Engine hints disabled", diagnostics)
+             return
+         }
+         val a = state.analysis
+         title.text = a?.bestMoveUci?.let { "BEST  $it" } ?: "Analyzing…"
+-        detail.text = if (a == null) {
+-            "Waiting for a stable board"
++        val analysisDetail = if (a == null) {
++            state.statusMessage ?: "Waiting for a stable board"
+         } else {
+             buildString {
+                 a.evaluationCp?.let { cp -> append(if (cp >= 0) "+" else "").append("%.2f".format(cp / 100.0)).append("  ") }
+@@ -47,5 +53,12 @@ class OverlayContent(context: Context) : LinearLayout(context) {
+                 append("depth ").append(a.depth)
+             }
+         }
++        detail.text = joinDetail(analysisDetail, diagnostics)
++    }
++
++    private fun joinDetail(primary: String, diagnostics: String): String = when {
++        diagnostics.isBlank() -> primary
++        primary.isBlank() -> diagnostics
++        else -> "$primary\n$diagnostics"
+     }
+ }
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayDiagnosticsFormatter.kt b/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayDiagnosticsFormatter.kt
+new file mode 100644
+index 0000000..8677693
+--- /dev/null
++++ b/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayDiagnosticsFormatter.kt
+@@ -0,0 +1,19 @@
++package com.nothatcher.chessoverlay.overlay.android
++
++object OverlayDiagnosticsFormatter {
++    fun format(
++        source: String?,
++        fen: String?,
++        engineState: String?,
++    ): String = buildString {
++        if (!source.isNullOrBlank()) append("Source: ").append(source)
++        if (!engineState.isNullOrBlank()) {
++            if (isNotEmpty()) append(" • ")
++            append(engineState)
++        }
++        if (!fen.isNullOrBlank()) {
++            if (isNotEmpty()) append('\n')
++            append("FEN: ").append(fen)
++        }
++    }
++}
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayDockPlanner.kt b/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayDockPlanner.kt
+new file mode 100644
+index 0000000..892193b
+--- /dev/null
++++ b/app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayDockPlanner.kt
+@@ -0,0 +1,42 @@
++package com.nothatcher.chessoverlay.overlay.android
++
++import com.nothatcher.chessoverlay.overlay.geometry.BoardBounds
++
++data class OverlayDockPosition(val x: Int, val y: Int)
++
++object OverlayDockPlanner {
