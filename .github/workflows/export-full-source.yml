@@ -49,10 +49,10 @@ jobs:
               p.write_text(s)
           PY
           rm -rf .git
-          tar -czf /tmp/chessoverlay-full-source.tar.gz .
           test -f app/src/main/java/com/nothatcher/chessoverlay/browser/LichessBrowserActivity.kt
           test -f app/src/main/assets/lichess_adapter.js
-          tar -tzf /tmp/chessoverlay-full-source.tar.gz | grep -q 'LichessBrowserActivity.kt'
+          tar -czf /tmp/chessoverlay-full-source.tar.gz .
+          test -s /tmp/chessoverlay-full-source.tar.gz
       - name: Upload full source
         uses: actions/upload-artifact@v4
         with:
