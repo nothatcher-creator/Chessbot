@@ -43,7 +43,12 @@ jobs:
           grep -q 'org.junit.Test' app/src/test/java/com/nothatcher/chessoverlay/browser/LichessSitePolicyTest.kt
           grep -q 'org.junit.Test' app/src/test/java/com/nothatcher/chessoverlay/browser/LichessPayloadValidatorTest.kt
 
-          cat unrestricted-src/part-*.b64 > /tmp/unrestricted-detection.b64
+          echo '865a0340354d1ee4a19c5721fdc0f89c3438f486e026f15a555d23e6ddfd475d  unrestricted-src-v2/part-00.b64' | sha256sum -c -
+          echo '662d070430fd82233271f40da933105d873cd6818fa746bae826258c7cd42f2a  unrestricted-src-v2/part-01.b64' | sha256sum -c -
+          echo '5c8ec32374d55036d150e899733ec0dd73a4a6977c6c3e1298ac018b2f93f894  unrestricted-src-v2/part-02.b64' | sha256sum -c -
+          echo '046a2f380973132bb270dc1b725956b2146e95a9066c721509866cec8837704d  unrestricted-src-v2/part-03.b64' | sha256sum -c -
+          echo 'c5cd11368813841c8f81683648ac29cf516c5cdfc3406582c4918d8bd4bfa9d9  unrestricted-src-v2/part-04.b64' | sha256sum -c -
+          cat unrestricted-src-v2/part-*.b64 > /tmp/unrestricted-detection.b64
           base64 -d /tmp/unrestricted-detection.b64 > /tmp/unrestricted-detection.tar.gz
           echo '562ea08c674851ad67804572cc72f988b3684cd6540aab4abf0c4ebe91e853a2  /tmp/unrestricted-detection.tar.gz' | sha256sum -c -
           tar -xzf /tmp/unrestricted-detection.tar.gz
@@ -56,8 +61,6 @@ jobs:
           sed -i 's/2026\.08\.01/2026.06.00/g; s/2026\.08\.00/2026.06.00/g' gradle/libs.versions.toml
           sed -i 's/2\.11\.0/2.10.0/g' gradle/libs.versions.toml
 
-          # getMediaProjection() is nullable. Fail capture startup cleanly if Android
-          # does not return a projection, then keep the local strongly non-null.
           python3 - <<'PY'
           from pathlib import Path
           p = Path('app/src/main/java/com/nothatcher/chessoverlay/capture/MediaProjectionService.kt')
@@ -68,9 +71,6 @@ jobs:
               raise SystemExit('Expected MediaProjection construction line not found')
           p.write_text(s.replace(old, new, 1))
           PY
-
-          echo '===== PATCHED VERSION CATALOG ====='
-          cat gradle/libs.versions.toml
 
       - name: Restore board-recognition model
         shell: bash
