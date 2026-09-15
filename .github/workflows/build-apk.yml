@@ -2,7 +2,7 @@ name: Build ChessOverlay APK
 
 on:
   push:
-    branches: [main, feature/lichess-dom-adapter, feature/unrestricted-detection]
+    branches: [main, feature/lichess-dom-adapter, feature/unrestricted-detection, feature/capture-overlay-fix]
   workflow_dispatch:
 
 permissions:
@@ -62,6 +62,15 @@ jobs:
               raise SystemExit('Expected MediaProjection construction line not found')
           p.write_text(s.replace(old, new, 1))
           PY
+
+          cat capturefix-patch/part-*.patch > /tmp/capture-overlay-fix.patch
+          echo '25a73e45634c7efe0261b549a69f19133e305fcb99f9d63e08ed9080ed889da7  /tmp/capture-overlay-fix.patch' | sha256sum -c -
+          git apply --check /tmp/capture-overlay-fix.patch
+          git apply /tmp/capture-overlay-fix.patch
+          test -f app/src/main/java/com/nothatcher/chessoverlay/capture/CaptureOverlayGate.kt
+          test -f app/src/main/java/com/nothatcher/chessoverlay/capture/CaptureOverlaySync.kt
+          test -f app/src/test/java/com/nothatcher/chessoverlay/capture/CaptureOverlayGateTest.kt
+          grep -q 'FEN:' app/src/main/java/com/nothatcher/chessoverlay/overlay/android/OverlayDiagnosticsFormatter.kt
 
       - name: Restore board-recognition model
         shell: bash
