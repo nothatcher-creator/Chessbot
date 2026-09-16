@@ -1,0 +1,171 @@
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/chess/PositionValidator.kt b/app/src/main/java/com/nothatcher/chessoverlay/chess/PositionValidator.kt
+index b275821..22ee2ed 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/chess/PositionValidator.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/chess/PositionValidator.kt
+@@ -5,6 +5,14 @@ object PositionValidator {
+         val reasons = mutableListOf<String>()
+         val whiteKings = position.board.count { it == Piece(Color.WHITE, PieceType.KING) }
+         val blackKings = position.board.count { it == Piece(Color.BLACK, PieceType.KING) }
++        val whitePieces = position.board.count { it?.color == Color.WHITE }
++        val blackPieces = position.board.count { it?.color == Color.BLACK }
++        val whitePawns = position.board.count { it == Piece(Color.WHITE, PieceType.PAWN) }
++        val blackPawns = position.board.count { it == Piece(Color.BLACK, PieceType.PAWN) }
++        if (whitePieces > 16) reasons += "White cannot have more than 16 pieces"
++        if (blackPieces > 16) reasons += "Black cannot have more than 16 pieces"
++        if (whitePawns > 8) reasons += "White cannot have more than 8 pawns"
++        if (blackPawns > 8) reasons += "Black cannot have more than 8 pawns"
+         if (whiteKings != 1) reasons += "Expected exactly one white king"
+         if (blackKings != 1) reasons += "Expected exactly one black king"
+ 
+diff --git a/app/src/main/java/com/nothatcher/chessoverlay/chess/RecognitionTracker.kt b/app/src/main/java/com/nothatcher/chessoverlay/chess/RecognitionTracker.kt
+index 1385ec4..0285890 100644
+--- a/app/src/main/java/com/nothatcher/chessoverlay/chess/RecognitionTracker.kt
++++ b/app/src/main/java/com/nothatcher/chessoverlay/chess/RecognitionTracker.kt
+@@ -34,10 +34,16 @@ class RecognitionTracker(
+     private var pendingCount = 0
+ 
+     fun accept(observation: BoardRecognition): TrackingResult {
++        val previous = confirmed
++        if (previous == null) {
++            standardStartBootstrap(observation)?.let { (position, confidence) ->
++                return confirmPending(position, confidence, null)
++            }
++        }
++
+         val candidates = generateCandidates(observation)
+         if (candidates.isEmpty()) return uncertain("No plausible board candidate")
+ 
+-        val previous = confirmed
+         if (previous != null) {
+             val legal = candidates.asSequence()
+                 .mapNotNull { candidate -> TransitionResolver.resolve(previous, candidate.board)?.let { candidate to it } }
+@@ -68,6 +74,32 @@ class RecognitionTracker(
+ 
+     fun lastConfirmed(): Position? = confirmed
+ 
++
++    private fun standardStartBootstrap(observation: BoardRecognition): Pair<Position, Float>? {
++        var supportSum = 0f
++        var homeContradictions = 0
++        var middleStrongPieces = 0
++        val emptyIndex = PieceClass.EMPTY.ordinal
++
++        observation.squares.forEachIndexed { index, square ->
++            val rank = index / 8
++            val emptyProbability = square.classProbabilities[emptyIndex].coerceIn(0f, 1f)
++            val expectedOccupied = rank == 0 || rank == 1 || rank == 6 || rank == 7
++            if (expectedOccupied) {
++                supportSum += 1f - emptyProbability
++                if (emptyProbability >= 0.70f) homeContradictions++
++            } else {
++                supportSum += emptyProbability
++                if (emptyProbability <= 0.10f) middleStrongPieces++
++            }
++        }
++
++        val meanSupport = supportSum / 64f
++        if (homeContradictions != 0 || middleStrongPieces != 0 || meanSupport < 0.82f) return null
++        val confidence = (observation.boardConfidence * meanSupport).coerceIn(0f, 1f)
++        return STANDARD_START_POSITION to confidence
++    }
++
+     private fun confirmPending(position: Position, confidence: Float, move: Move?): TrackingResult {
+         if (pendingBoard == position.board) pendingCount++ else {
+             pendingBoard = position.board
+@@ -228,8 +260,9 @@ class RecognitionTracker(
+     }
+ 
+     companion object {
+-        private val STANDARD_START_BOARD = FenCodec.parse(
++        private val STANDARD_START_POSITION = FenCodec.parse(
+             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+-        ).board
++        )
++        private val STANDARD_START_BOARD = STANDARD_START_POSITION.board
+     }
+ }
+diff --git a/app/src/test/java/com/nothatcher/chessoverlay/regression/InitialBoardBootstrapRegressionTest.kt b/app/src/test/java/com/nothatcher/chessoverlay/regression/InitialBoardBootstrapRegressionTest.kt
+new file mode 100644
+index 0000000..4876479
+--- /dev/null
++++ b/app/src/test/java/com/nothatcher/chessoverlay/regression/InitialBoardBootstrapRegressionTest.kt
+@@ -0,0 +1,79 @@
++package com.nothatcher.chessoverlay.regression
++
++import com.nothatcher.chessoverlay.chess.*
++import com.nothatcher.chessoverlay.overlay.geometry.BoardQuad
++import com.nothatcher.chessoverlay.overlay.geometry.PointFModel
++import com.nothatcher.chessoverlay.vision.BoardRecognition
++import com.nothatcher.chessoverlay.vision.PieceClass
++import com.nothatcher.chessoverlay.vision.SquareProbabilities
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotEquals
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class InitialBoardBootstrapRegressionTest {
++    @Test fun impossiblePieceCountsAreRejected() {
++        val bad = FenCodec.parse(BAD_START_FEN)
++        val validation = PositionValidator.validate(bad)
++        assertFalse(validation.isValid)
++        assertTrue(validation.reasons.any { "pawns" in it.lowercase() || "pieces" in it.lowercase() })
++    }
++
++    @Test fun screenshotBadFenBootstrapsToStandardStartFromOccupancy() {
++        val tracker = RecognitionTracker(confirmFrames = 1)
++        val result = tracker.accept(recognitionFromPosition(FenCodec.parse(BAD_START_FEN)))
++        assertTrue(result is TrackingResult.Confirmed)
++        result as TrackingResult.Confirmed
++        assertEquals(STANDARD_START_FEN, FenCodec.format(result.position))
++    }
++
++    @Test fun oneMoveLayoutDoesNotResetToStartingPosition() {
++        val tracker = RecognitionTracker(confirmFrames = 1)
++        val afterE4 = FenCodec.parse("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1")
++        val result = tracker.accept(recognitionFromPosition(afterE4))
++        assertTrue(result is TrackingResult.Confirmed)
++        result as TrackingResult.Confirmed
++        assertNotEquals(FenCodec.parse(STANDARD_START_FEN).board, result.position.board)
++    }
++
++    private fun recognitionFromPosition(position: Position): BoardRecognition {
++        val squares = position.board.map { piece ->
++            val probabilities = FloatArray(PieceClass.entries.size) { 0.0005f }
++            probabilities[pieceClass(piece).ordinal] = 0.994f
++            SquareProbabilities(probabilities)
++        }
++        return BoardRecognition(
++            quad = BoardQuad(
++                PointFModel(0f, 0f), PointFModel(800f, 0f),
++                PointFModel(800f, 800f), PointFModel(0f, 800f),
++            ),
++            orientationHint = BoardOrientation.WHITE_BOTTOM,
++            squares = squares,
++            boardConfidence = .99f,
++            capturedAtElapsedMs = 0L,
++        )
++    }
++
++    private fun pieceClass(piece: Piece?): PieceClass = when (piece) {
++        null -> PieceClass.EMPTY
++        Piece(Color.WHITE, PieceType.PAWN) -> PieceClass.WP
++        Piece(Color.WHITE, PieceType.KNIGHT) -> PieceClass.WN
++        Piece(Color.WHITE, PieceType.BISHOP) -> PieceClass.WB
++        Piece(Color.WHITE, PieceType.ROOK) -> PieceClass.WR
++        Piece(Color.WHITE, PieceType.QUEEN) -> PieceClass.WQ
++        Piece(Color.WHITE, PieceType.KING) -> PieceClass.WK
++        Piece(Color.BLACK, PieceType.PAWN) -> PieceClass.BP
++        Piece(Color.BLACK, PieceType.KNIGHT) -> PieceClass.BN
++        Piece(Color.BLACK, PieceType.BISHOP) -> PieceClass.BB
++        Piece(Color.BLACK, PieceType.ROOK) -> PieceClass.BR
++        Piece(Color.BLACK, PieceType.QUEEN) -> PieceClass.BQ
++        Piece(Color.BLACK, PieceType.KING) -> PieceClass.BK
++        else -> error("Unexpected piece")
++    }
++
++    companion object {
++        private const val STANDARD_START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
++        private const val BAD_START_FEN = "rbbqkbnR/PPPPPPPP/8/8/8/8/PPPPPPPP/BNBQKBNB w - - 0 1"
++    }
++}
