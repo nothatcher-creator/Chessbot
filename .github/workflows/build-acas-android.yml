@@ -32,6 +32,17 @@ jobs:
           echo "===== SALVAGED FILES ====="
           find acas-android -type f | sort || true
           echo "===== END SALVAGED FILES ====="
+          echo "===== RECOVERED API SOURCES ====="
+          for f in \
+            acas-android/app/src/main/java/com/nothatcher/acasbridge/BoardStateResolver.java \
+            acas-android/app/src/main/java/com/nothatcher/acasbridge/SanTokenExtractor.java \
+            acas-android/app/src/main/java/com/nothatcher/acasbridge/AccessibilitySnapshotReader.java \
+            acas-android/app/src/main/java/com/nothatcher/acasbridge/DetectorState.java \
+            acas-android/app/src/test/java/com/nothatcher/acasbridge/BoardStateResolverTest.java; do
+            echo "===== FILE: $f ====="
+            sed -n '1,260p' "$f"
+          done
+          echo "===== END RECOVERED API SOURCES ====="
           test -f acas-android/settings.gradle.kts
           test -f acas-android/build.gradle.kts
           test -f acas-android/app/build.gradle.kts
