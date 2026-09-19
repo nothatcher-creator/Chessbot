@@ -3,6 +3,12 @@ package com.nothatcher.acasbridge;
 import java.util.Set;
 
 public final class TargetAppClassifier {
+    public enum Target {
+        CHROME,
+        LICHESS_APP,
+        OTHER
+    }
+
     public static final String CHROME = "com.android.chrome";
     public static final String LICHESS_V2 = "org.lichess.mobileV2";
     public static final String LICHESS_LEGACY = "org.lichess.mobileapp";
@@ -19,14 +25,19 @@ public final class TargetAppClassifier {
         return isTarget(packageName);
     }
 
-    public static String classify(String packageName) {
-        if (CHROME.equals(packageName)) return "Lichess in Chrome";
-        if (LICHESS_V2.equals(packageName)) return "Lichess app";
-        if (LICHESS_LEGACY.equals(packageName)) return "Lichess legacy app";
-        return "Other app";
+    public static Target classify(String packageName) {
+        if (CHROME.equals(packageName)) return Target.CHROME;
+        if (LICHESS_V2.equals(packageName) || LICHESS_LEGACY.equals(packageName)) {
+            return Target.LICHESS_APP;
+        }
+        return Target.OTHER;
     }
 
     public static String label(String packageName) {
-        return classify(packageName);
+        return switch (classify(packageName)) {
+            case CHROME -> "Lichess in Chrome";
+            case LICHESS_APP -> "Lichess app";
+            case OTHER -> "Other app";
+        };
     }
 }
