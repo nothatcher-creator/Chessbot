@@ -15,7 +15,7 @@ public final class AcasAccessibilityService extends AccessibilityService {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) {
             DetectorState.publish(new DetectorState.Snapshot(
-                    TargetAppClassifier.classify(packageName),
+                    TargetAppClassifier.label(packageName),
                     "Accessibility",
                     false,
                     null,
@@ -46,7 +46,7 @@ public final class AcasAccessibilityService extends AccessibilityService {
             }
 
             DetectorState.publish(new DetectorState.Snapshot(
-                    TargetAppClassifier.classify(packageName),
+                    TargetAppClassifier.label(packageName),
                     "Accessibility",
                     confirmed,
                     fen,
