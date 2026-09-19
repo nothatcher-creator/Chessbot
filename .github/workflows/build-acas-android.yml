@@ -25,20 +25,20 @@ jobs:
           set +e
           gzip -dc /tmp/acas-android.tar.gz > /tmp/acas-android.tar
           gzip_status=$?
+          tar -xf /tmp/acas-android.tar --ignore-zeros
+          tar_status=$?
           set -e
-          echo "gzip salvage status=$gzip_status"
-          test -s /tmp/acas-android.tar
-          tar -tf /tmp/acas-android.tar > /tmp/acas-android-files.txt
-          grep -q '^acas-android/app/src/main/AndroidManifest.xml$' /tmp/acas-android-files.txt
-          grep -q '^acas-android/app/src/main/java/com/nothatcher/acasbridge/AcasAccessibilityService.java$' /tmp/acas-android-files.txt
-          grep -q '^acas-android/app/src/main/java/com/nothatcher/acasbridge/ProjectionService.java$' /tmp/acas-android-files.txt
-          grep -q '^acas-android/app/src/test/java/com/nothatcher/acasbridge/BoardStateResolverTest.java$' /tmp/acas-android-files.txt
-          tar -xf /tmp/acas-android.tar
+          echo "gzip salvage status=$gzip_status tar salvage status=$tar_status"
+          test -f acas-android/settings.gradle.kts
+          test -f acas-android/build.gradle.kts
+          test -f acas-android/app/build.gradle.kts
           test -f acas-android/app/src/main/AndroidManifest.xml
           test -f acas-android/app/src/main/java/com/nothatcher/acasbridge/AcasAccessibilityService.java
           test -f acas-android/app/src/main/java/com/nothatcher/acasbridge/ProjectionService.java
+          test -f acas-android/app/src/main/java/com/nothatcher/acasbridge/MainActivity.java
           test -f acas-android/app/src/test/java/com/nothatcher/acasbridge/BoardStateResolverTest.java
           ! grep -q 'android.permission.INTERNET' acas-android/app/src/main/AndroidManifest.xml
+          find acas-android -type f | sort
           sha256sum /tmp/acas-android.tar.gz
 
       - name: Set up Java 17
