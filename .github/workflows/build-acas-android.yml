@@ -29,6 +29,9 @@ jobs:
           tar_status=$?
           set -e
           echo "gzip salvage status=$gzip_status tar salvage status=$tar_status"
+          echo "===== SALVAGED FILES ====="
+          find acas-android -type f | sort || true
+          echo "===== END SALVAGED FILES ====="
           test -f acas-android/settings.gradle.kts
           test -f acas-android/build.gradle.kts
           test -f acas-android/app/build.gradle.kts
