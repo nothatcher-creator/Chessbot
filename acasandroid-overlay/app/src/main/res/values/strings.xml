@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ACAS Android M1</string>
+    <string name="accessibility_service_name">ACAS Lichess Detector</string>
+    <string name="accessibility_service_description">Reads visible Lichess move history for on-device position diagnostics.</string>
+</resources>
