@@ -20,8 +20,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat acasandroid-src/part-*.b64 > /tmp/acas-android.b64
-          base64 -d /tmp/acas-android.b64 > /tmp/acas-android.tar.gz
+          cp acasandroid-src/acas-android.tar.gz /tmp/acas-android.tar.gz
           gzip -t /tmp/acas-android.tar.gz
           tar -tzf /tmp/acas-android.tar.gz >/tmp/acas-android-files.txt
           grep -q '^acas-android/app/src/main/AndroidManifest.xml$' /tmp/acas-android-files.txt
